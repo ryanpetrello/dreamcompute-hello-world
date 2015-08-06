@@ -1,0 +1,119 @@
+- hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: python
+  tasks:
+
+    - name: launch an instance
+      os_server:
+        name: hello-world
+        state: present
+        image: Ubuntu-14.04
+        flavor_ram: 2048
+        auto_floating_ip: yes
+        key_name: "{{ key_name }}"
+        nics:
+          - net-name: private-network
+
+    - name: get facts about the server (including its public v4 IP address)
+      os_server_facts:
+        server: hello-world
+      until: openstack.public_v4 != ""
+      retries: 5
+      delay: 10
+
+    - set_fact: public_v4="{{ openstack.public_v4 }}"
+
+    - name: add the server to our ansible inventory
+      add_host: hostname={{ public_v4 }} groups=web ansible_ssh_user=dhc-user ansible_ssh_private_key_file={{ private_key }}
+
+    - name: wait for ssh to be available
+      wait_for: host={{ public_v4 }} port=22 state=started
+
+- hosts: web
+  sudo: True
+
+  vars:
+    app_name: helloworld
+    webapp_dir: /opt/web
+    repo_url: https://github.com/ryanpetrello/dreamcompute-hello-world.git
+    repo_remote: origin
+    repo_version: master
+
+  tasks:
+
+    - name: add nginx ppa
+      action: apt_repository repo=ppa:nginx/stable state=present
+
+    - name: install common packages needed for python application development
+      action: apt pkg={{ item }} state=installed
+      with_items:
+        - python-dev
+        - python-setuptools
+        - git-core
+        - nginx
+
+    - name: install pip
+      action: easy_install name=pip
+
+    - name: install various libraries with pip
+      action: pip name={{ item }} state=present
+      with_items:
+        - virtualenv
+        - supervisor
+
+    - name: create clone directory
+      action: file dest="{{ webapp_dir }}" state=directory
+
+    - name: copy code from Github
+      action: git repo="{{repo_url}}" dest="{{webapp_dir}}/{{app_name}}/src" remote="{{repo_remote}}" version="{{repo_version}}"
+
+    - name: install dependencies into virtualenv
+      action: pip name="{{webapp_dir}}/{{app_name}}/src" virtualenv="{{webapp_dir}}/{{app_name}}/venv" state=present
+
+    - name: install gunicorn
+      action: pip name=gunicorn state=present virtualenv="{{webapp_dir}}/{{app_name}}/venv"
+
+    - name: remove default nginx site
+      action: file path=/etc/nginx/sites-enabled/default state=absent
+
+    - name: write nginx.conf
+      action: template src=templates/nginx.conf dest=/etc/nginx/nginx.conf
+
+    - name: create supervisord config folder
+      action: file dest=/etc/supervisor state=directory owner=root
+
+    - name: create supervisord config
+      action: template src=templates/supervisord.conf dest=/etc/supervisord.conf
+
+    - name: create supervisord init script
+      action: template src=templates/supervisord.sh dest=/etc/init.d/supervisord mode=0755
+
+    - name: create supervisor program config
+      action: template src=templates/supervisor.ini dest="/etc/supervisor/{{app_name}}.ini"
+      notify:
+        - restart app
+
+    - name: create nginx site config
+      action: template src=templates/nginx_site.conf dest="/etc/nginx/sites-available/{{app_name}}.conf"
+      notify:
+        - restart nginx
+
+    - name: link nginx config
+      action: file src="/etc/nginx/sites-available/{{app_name}}.conf" dest="/etc/nginx/sites-enabled/{{app_name}}.conf" state=link
+
+    - name: start supervisord service and have it run during system startup
+      action: service name=supervisord state=started enabled=yes
+
+    - name: start app
+      action: supervisorctl name="{{app_name}}" state=started
+
+    - name: show the website URL
+      debug: msg="Visit http://{{inventory_hostname}}/ in your browser!"
+
+  handlers:
+    - name: restart app
+      action: supervisorctl name="{{app_name}}" state=restarted
+
+    - name: restart nginx
+      action: service name=nginx state=restarted
