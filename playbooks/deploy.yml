@@ -14,18 +14,39 @@
         key_name: "{{ key_name }}"
         nics:
           - net-name: private-network
+      register: example_server
 
     - name: get facts about the server (including its public v4 IP address)
       os_server_facts:
         server: hello-world
-      until: openstack.public_v4 != ""
+      until: example_server.server.public_v4 != ""
       retries: 5
       delay: 10
 
-    - set_fact: public_v4="{{ openstack.public_v4 }}"
+    - set_fact: public_v4="{{ example_server.server.public_v4 }}"
 
     - name: add the server to our ansible inventory
       add_host: hostname={{ public_v4 }} groups=web ansible_ssh_user=dhc-user ansible_ssh_private_key_file={{ private_key }}
+
+    - name: wait for ssh to be available
+      wait_for: host={{ public_v4 }} port=22 state=started
+
+- hosts: web
+  sudo: True
+
+  tasks:
+
+    - name: restart the server (due to an ubuntu/ansible bug)
+      command: shutdown -r now
+      async: 0
+      poll: 0
+      ignore_errors: true
+
+- hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: python
+  tasks:
 
     - name: wait for ssh to be available
       wait_for: host={{ public_v4 }} port=22 state=started
@@ -51,6 +72,7 @@
         - python-dev
         - python-setuptools
         - git-core
+        - software-properties-common
         - nginx
 
     - name: install pip
