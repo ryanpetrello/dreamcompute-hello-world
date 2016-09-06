@@ -10,10 +10,9 @@
         state: present
         image: Ubuntu-14.04
         flavor_ram: 2048
-        auto_floating_ip: yes
         key_name: "{{ key_name }}"
         nics:
-          - net-name: private-network
+          - net-name: public
       register: example_server
 
     - name: get facts about the server (including its public v4 IP address)
